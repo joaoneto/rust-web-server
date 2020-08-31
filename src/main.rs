@@ -1,48 +1,65 @@
-use std::io::prelude::*;
+use std::io::{
+    prelude::*,
+    ErrorKind,
+};
 use std::net::{
     TcpStream,
     TcpListener,
     Shutdown,
 };
-
-const REQUEST_EOL: &str = "\r\n\r\n";
+use std::time::Duration;
 
 fn main() {
     let listener = TcpListener::bind("0.0.0.0:3000").unwrap();
 
     for stream in listener.incoming() {
-        let stream = stream.unwrap();
-
-        handle_connection(stream);
+        match stream {
+            Ok(s) => {
+                handle_request(s);
+            }
+            Err(e) => panic!("encountered IO error: {}", e),
+        }
     }
 }
 
-fn handle_connection(mut stream: TcpStream) {
-    let mut raw_request = String::new();
+fn handle_request(mut stream: TcpStream) {
     let mut buffer = [0; 128];
+    let mut raw_request = String::new();
 
-    println!("new connection");
+    stream.set_nodelay(true).expect("failed to set nodelay");
+    stream.set_nonblocking(false).expect("failed to set nonblocking");
+    stream.set_read_timeout(Some(Duration::new(0, 100))).expect("failed to set read timeoutg");
 
-    while match stream.read(&mut buffer) {
-        Ok(size) => {
-            let chunk = String::from_utf8_lossy(&buffer[0..size]);
-            raw_request.push_str(&chunk);
+    loop {
+        match stream.read(&mut buffer[..]) {
+            Ok(size) => {
+                let chunk = String::from_utf8_lossy(&buffer[0..size]);
+                raw_request.push_str(&chunk);
+                println!("Received: {} {:?}", size, chunk);
 
-            // verifica se os ultimos caracteres são REQUEST_EOL
-            !chunk.contains(REQUEST_EOL)
-        },
-        Err(_) => {
-            println!("An error occurred, terminating connection with {}", stream.peer_addr().unwrap());
-            stream.shutdown(Shutdown::Both).unwrap();
-            false
+                if size == 0 {
+                    break;
+                }
+            }
+            Err(e) if e.kind() == ErrorKind::WouldBlock => {
+                eprintln!("WouldBlock: {}", e);
+                break;
+            }
+            Err(e) if e.kind() == ErrorKind::Interrupted => {
+                println!("Interrupted: {}", e);
+                break;
+            }
+            Err(e) => {
+                println!("Error: {}", e);
+                break;
+            }
         }
-    } {}
+    }{}
+    
+    println!("{}", raw_request);
 
-    let raw_response = format!("HTTP/1.1 200 OK{}", REQUEST_EOL);
-
-    stream.write(raw_response.as_bytes()).unwrap();
+    stream.write_all(b"HTTP/1.1 200 OK\r\nContent-Type: application/json; charset=utf-8\r\n\r\n{ \"ok\": true }\r\n\r\n").unwrap();
     stream.flush().unwrap();
+    stream.shutdown(Shutdown::Both).expect("shutdown call failed");
 
-    println!("disconnected");
-    println!("RAW Request: {}", raw_request);
 }
